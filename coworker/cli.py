@@ -79,6 +79,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         from .remote.joiner import cli as remote_cli
 
         raise SystemExit(remote_cli(args, prog="openworker", only=TOP_COMMANDS))
+    if args[0] == "agent":
+        from .headless.agent import main as agent_main
+
+        agent_main(args[1:])  # a long-running team agent, for an OpenShell sandbox
+        return
     if args[0] == "run":
         from .headless.runner import main as run_main
 

@@ -322,7 +322,7 @@ class RemoteDialect:
     actor+role, so this client never states who it is, it proves it."""
 
     def __init__(
-        self, base_url: str, token: str, *, client: Any = None, timeout: float = 30.0
+        self, base_url: str, token: Optional[str], *, client: Any = None, timeout: float = 30.0
     ) -> None:
         import httpx
 
@@ -331,7 +331,10 @@ class RemoteDialect:
             base_url=self.base_url,
             timeout=timeout,
         )
-        self._client.headers["Authorization"] = f"Bearer {token}"
+        # No token inside an OpenShell sandbox: OpenShell attaches a Sandbox Passport
+        # to each request outside the agent, and the board trusts that instead.
+        if token:
+            self._client.headers["Authorization"] = f"Bearer {token}"
 
     # -- plumbing --------------------------------------------------------------
 

@@ -1,0 +1,55 @@
+"""`openworker agent` against the real board API with a Sandbox Passport and a scripted
+model: it wakes on its assignment, comments through the board tools, and consumes."""
+
+import json
+
+import pytest
+
+from coworker.teams.model import Actor, Role
+from test_board_passport import ADMIN, AUD, passport  # noqa: F401  (fixtures and helpers)
+from test_board_passport import api  # noqa: F401
+
+USER = Actor("user", Role.USER)
+
+
+class PassportClient:
+    """Wraps the test client so every request carries this sandbox's Passport,
+    as OpenShell's supervisor does outside the agent."""
+
+    def __init__(self, client, key, sandbox_id):
+        self._client, self._key, self._sid = client, key, sandbox_id
+        self.headers = {}
+
+    def get(self, path, params=None):
+        return self._client.get(path, params=params, headers=passport(self._key, self._sid))
+
+    def post(self, path, json=None):
+        return self._client.post(path, json=json, headers=passport(self._key, self._sid))
+
+
+def test_agent_wakes_on_its_assignment_and_comments_as_itself(api, tmp_path):  # noqa: F811
+    client, manager, key = api
+    item = manager.team_store.create_item("proj", USER, title="Fix the bug", criteria="tests pass")
+    manager.team_store.assign("proj", USER, item["id"], "reviewer")
+    script = tmp_path / "turns.json"
+    script.write_text(json.dumps([
+        {"tool_calls": [{"name": "board_comment", "arguments": {"id": item["id"], "body": "Reviewed: LGTM"}}]},
+        {"text": "Done."},
+    ]))
+    from coworker.headless.agent import _parser, run
+
+    args = _parser().parse_args(["--space", "proj", "--board-url", "http://board.test", "--once",
+                                 "--scripted", str(script), "--workspace", str(tmp_path / "ws"),
+                                 "--poll-seconds", "0"])
+    assert run(args, client=PassportClient(client, key, "sb-rev")) == 0
+
+    comments = manager.team_store.comment_page("proj", item["id"], actor=USER)["comments"]
+    assert [(c["author"], c["body"]) for c in comments] == [("reviewer", "Reviewed: LGTM")]
+    assert manager.team_store.feed_for("proj", "reviewer") == []  # consumed
+
+
+def test_worker_is_not_offered_assign(api):  # noqa: F811
+    from coworker.teams.remote_tools import board_tools_over
+
+    names = {t.__name__ for t in board_tools_over(object(), space="proj", role="worker")}
+    assert "board_assign" not in names and "board_comment" in names
