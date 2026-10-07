@@ -181,6 +181,9 @@ def _session_sandbox(engine: Any) -> dict[str, Any]:
 from ..teams.model import AuthorityError as TeamsAuthorityError
 from ..teams.model import BoardError as TeamsBoardError
 from ..teams.model import BoardNotFoundError as TeamsBoardNotFoundError
+from ..teams.passport import ADMIN_HEADER as PASSPORT_ADMIN_HEADER
+from ..teams.passport import HEADER as PASSPORT_HEADER
+from ..teams.passport import PassportAuth, PassportError, SandboxAgent
 from .manager import SessionManager, _approval_body
 
 
@@ -248,6 +251,11 @@ def create_app(manager: SessionManager) -> FastAPI:
         }
         return any(secrets.compare_digest(part, api_token) for part in protocols)
 
+    from ..secrets import state_dir as _state_dir
+
+    # OpenShell Sandbox Passport (agents in their own OpenShell sandboxes). Off unless configured.
+    passport_auth = PassportAuth.from_env(_state_dir())
+
     @app.middleware("http")
     async def require_sidecar_token(request: Request, call_next):
         if request.url.path.startswith("/v1/providers/openrouter-account/") and not _origin_allowed(
@@ -264,6 +272,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             # (identity + access), designed to be handed to external harnesses and
             # other machines — which can never hold the machine-local sidecar token.
             or request.url.path.startswith("/v1/board/")
+            # OpenShell Spawn Gate registers sandboxed agents with its own admin token
+            # (checked by the handler); it never holds the sidecar token.
+            or (passport_auth is not None and request.url.path.startswith("/v1/admin/agents"))
             # Join-URL hint page: read by a human on a remote box (no sidecar
             # token there); serves constant instructions, validates nothing.
             or request.url.path.startswith("/j/")
@@ -933,8 +944,38 @@ def create_app(manager: SessionManager) -> FastAPI:
         token = auth[7:] if auth.lower().startswith("bearer ") else ""
         return manager.board_tokens.resolve(token)
 
+    def _request_space(request: Request) -> Optional[str]:
+        """The board space a request targets: `space` in the query or the JSON body."""
+        space = request.query_params.get("space")
+        if space is None:
+            raw = getattr(request, "_body", b"") or b""
+            try:
+                parsed = json.loads(raw) if raw else {}
+            except ValueError:
+                parsed = {}
+            if isinstance(parsed, dict) and parsed.get("space") is not None:
+                space = str(parsed.get("space"))
+        return space
+
     def _board(request: Request, handler):
-        actor = _board_actor(request)
+        request.state.board_space = None
+        passport_token = request.headers.get(PASSPORT_HEADER, "")
+        if passport_auth is not None and passport_token:
+            # A Passport is authoritative: never fall back to a bearer token.
+            try:
+                agent = passport_auth.caller(passport_token)
+            except PassportError as error:
+                return JSONResponse({"error": f"invalid Sandbox Passport: {error}"}, status_code=401)
+            except LookupError as error:
+                return JSONResponse({"error": str(error)}, status_code=403)
+            space = _request_space(request)
+            if space is not None and space != agent.space:
+                return JSONResponse({"error": "this agent may only use its own team's space"},
+                                    status_code=403)
+            request.state.board_space = agent.space
+            actor = agent.actor()
+        else:
+            actor = _board_actor(request)
         if actor is None:
             return JSONResponse(
                 {"error": "board token required (Authorization: Bearer …) — mint"
@@ -950,6 +991,26 @@ def create_app(manager: SessionManager) -> FastAPI:
         except (TeamsBoardError, ValueError) as error:
             return JSONResponse({"error": str(error)}, status_code=400)
 
+    @app.post("/v1/admin/agents")
+    def admin_register_agent(request: Request, body: dict):
+        if passport_auth is None or not passport_auth.is_admin(request.headers.get(PASSPORT_ADMIN_HEADER, "")):
+            return JSONResponse({"error": "admin only"}, status_code=403)
+        body = body or {}
+        role = str(body.get("role", ""))
+        if role not in ("lead", "worker"):
+            return JSONResponse({"error": "role must be lead or worker"}, status_code=400)
+        passport_auth.agents.register(SandboxAgent(
+            sandbox_id=str(body["sandbox_id"]), team=str(body["team"]),
+            space=str(body.get("space") or body["team"]), name=str(body["name"]), role=role))
+        return {"ok": True}
+
+    @app.delete("/v1/admin/agents/{sandbox_id}")
+    def admin_remove_agent(request: Request, sandbox_id: str):
+        if passport_auth is None or not passport_auth.is_admin(request.headers.get(PASSPORT_ADMIN_HEADER, "")):
+            return JSONResponse({"error": "admin only"}, status_code=403)
+        passport_auth.agents.remove(sandbox_id)
+        return {"ok": True}
+
     @app.get("/v1/board/whoami")
     def board_whoami(request: Request):
         return _board(
@@ -958,7 +1019,9 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/board/spaces")
     def board_spaces(request: Request):
-        return _board(request, lambda actor: {"spaces": manager.team_store.spaces()})
+        return _board(request, lambda actor: {"spaces": [
+            space for space in manager.team_store.spaces()
+            if request.state.board_space is None or space == request.state.board_space]})
 
     @app.get("/v1/board/items")
     def board_list_items(
