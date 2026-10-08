@@ -44,12 +44,13 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def digest(events: list[dict[str, Any]], who: dict[str, Any]) -> str:
-    lines = [f"You are {who.get('actor')} (role {who.get('role')}) on a team board. New activity:"]
+    lines = [f"You are {who.get('actor')} (role {who.get('role')}) on a team board. New activity on the board:"]
     for e in events:
         payload = e.get("payload") or {}
         detail = payload.get("body") or payload.get("comment") or payload.get("assignee") or ""
         lines.append(f"- {e.get('kind')} on item {e.get('item_id')} by {e.get('actor')}: {detail}".rstrip(": "))
-    lines.append("Use the board tools to act on it, then stop.")
+    lines.append("Decide what this activity asks of you and act on it now with your tools. "
+                 "If an earlier instruction said to wait for this, the wait is over.")
     return "\n".join(lines)
 
 
