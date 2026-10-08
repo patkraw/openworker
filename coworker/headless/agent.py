@@ -102,7 +102,7 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
         mode=Mode(args.approval_mode),
         provider=provider,
         extra_tools=board_tools_over(dialect, space=args.space, role=role) + (
-            spawn_tools(args.spawn_url, team=args.space) if role == "lead" else []),
+            spawn_tools(args.spawn_url, team=args.space, board_url=args.board_url) if role == "lead" else []),
         session_id=f"agent-{uuid.uuid4().hex[:8]}",
     )
     engine.attendance = lambda: "auto"

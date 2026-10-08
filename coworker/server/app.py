@@ -184,6 +184,7 @@ from ..teams.model import BoardNotFoundError as TeamsBoardNotFoundError
 from ..teams.passport import ADMIN_HEADER as PASSPORT_ADMIN_HEADER
 from ..teams.passport import HEADER as PASSPORT_HEADER
 from ..teams.passport import PassportAuth, PassportError, SandboxAgent
+from ..teams.approvals import ApprovalError, ApprovalStore
 from .manager import SessionManager, _approval_body
 
 
@@ -274,7 +275,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             or request.url.path.startswith("/v1/board/")
             # OpenShell Spawn Gate registers sandboxed agents with its own admin token
             # (checked by the handler); it never holds the sidecar token.
-            or (passport_auth is not None and request.url.path.startswith("/v1/admin/agents"))
+            or (passport_auth is not None and request.url.path.startswith("/v1/admin/"))
             # Join-URL hint page: read by a human on a remote box (no sidecar
             # token there); serves constant instructions, validates nothing.
             or request.url.path.startswith("/j/")
@@ -1002,6 +1003,59 @@ def create_app(manager: SessionManager) -> FastAPI:
         passport_auth.agents.register(SandboxAgent(
             sandbox_id=str(body["sandbox_id"]), team=str(body["team"]),
             space=str(body.get("space") or body["team"]), name=str(body["name"]), role=role))
+        return {"ok": True}
+
+    team_approvals = ApprovalStore(_state_dir() / "team-approvals.db")
+
+    @app.post("/v1/board/team-proposals")
+    def board_propose_team(request: Request, body: dict):
+        """A lead proposes its team; the user sees it on the approval card."""
+        body = body or {}
+
+        def run(actor):
+            if actor.role.value != "lead":
+                raise TeamsAuthorityError("only a lead proposes a team")
+            try:
+                return team_approvals.propose(str(body.get("space", "")), actor.id, list(body.get("workers") or []))
+            except ApprovalError as error:
+                raise TeamsBoardError(str(error)) from error
+
+        return _board(request, run)
+
+    @app.get("/v1/board/team-proposals/{pid}")
+    def board_get_team_proposal(request: Request, pid: str, space: str):
+        def run(actor):
+            proposal = team_approvals.get(pid)
+            if not proposal or proposal["space"] != space or proposal["lead"] != actor.id:
+                raise TeamsBoardNotFoundError("no such proposal for you")
+            return proposal
+
+        return _board(request, run)
+
+    @app.get("/v1/team-proposals")
+    def list_team_proposals():
+        """For the approval card: proposals waiting for the user (sidecar token)."""
+        return {"proposals": team_approvals.pending()}
+
+    @app.post("/v1/team-proposals/{pid}/decide")
+    def decide_team_proposal(pid: str, body: dict):
+        try:
+            return team_approvals.decide(pid, approve=bool((body or {}).get("approve")), by="user")
+        except ApprovalError as error:
+            return JSONResponse({"error": str(error)}, status_code=400)
+
+    @app.post("/v1/admin/approvals/consume")
+    def admin_consume_approval(request: Request, body: dict):
+        """OpenShell's Spawn Gate consumes an approval ID before creating a worker."""
+        if passport_auth is None or not passport_auth.is_admin(request.headers.get(PASSPORT_ADMIN_HEADER, "")):
+            return JSONResponse({"error": "admin only"}, status_code=403)
+        body = body or {}
+        try:
+            team_approvals.consume(str(body.get("approval_id", "")), space=str(body.get("team", "")),
+                                   lead=str(body.get("lead", "")), worker=str(body.get("worker", "")),
+                                   digest=str(body.get("digest", "")))
+        except ApprovalError as error:
+            return JSONResponse({"error": str(error)}, status_code=403)
         return {"ok": True}
 
     @app.delete("/v1/admin/agents/{sandbox_id}")
