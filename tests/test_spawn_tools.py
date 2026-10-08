@@ -44,7 +44,7 @@ class FakeGate:
 
 def test_staff_worker_sends_a_proposed_policy_to_spawn_gate():
     gate = FakeGate()
-    _, staff = spawn_tools("http://gate", team="proj", client=gate)
+    staff = {t.__name__: t for t in spawn_tools("http://gate", team="proj", client=gate)}["staff_worker"]
     result = staff("reviewer", "reviewer", "review item 1", network=["inference"])
     assert result == {"staffed": "reviewer", "state": "running", "sandbox_id": "sb-1"}
     path, body = gate.posted[0]
@@ -54,6 +54,6 @@ def test_staff_worker_sends_a_proposed_policy_to_spawn_gate():
 
 def test_staff_worker_reports_a_bad_request_instead_of_sending_it():
     gate = FakeGate()
-    _, staff = spawn_tools("http://gate", team="proj", client=gate)
+    staff = {t.__name__: t for t in spawn_tools("http://gate", team="proj", client=gate)}["staff_worker"]
     assert "error" in staff("x", "reviewer", "t", network=["evil"])
     assert gate.posted == []
