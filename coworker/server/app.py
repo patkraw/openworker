@@ -983,8 +983,11 @@ def create_app(manager: SessionManager) -> FastAPI:
                     f"{passport_token[:12]}…{passport_token[-6:]}: signature ok, aud={claims.get('aud')}, "
                     f"sandbox {str(claims.get('sbx'))[:8]}… registered as {agent.name}")
             except PassportError as error:
+                request.state.passport_agent = f"(Passport {passport_token[:12]}… did not verify: {error})"
                 return JSONResponse({"error": f"invalid Sandbox Passport: {error}"}, status_code=401)
             except LookupError as error:
+                request.state.passport_agent = (f"(Passport {passport_token[:12]}… is valid, but its sandbox is not "
+                                                f"registered: identity revoked or never admitted)")
                 return JSONResponse({"error": str(error)}, status_code=403)
             if _request_spaces(request) - {agent.space}:
                 return JSONResponse({"error": "this agent may only use its own team's space"},
