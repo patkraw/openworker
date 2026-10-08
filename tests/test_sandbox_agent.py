@@ -53,6 +53,21 @@ def test_worker_is_not_offered_assign(api):  # noqa: F811
 
     names = {t.__name__ for t in board_tools_over(object(), space="proj", role="worker")}
     assert "board_assign" not in names and "board_comment" in names
+    assert "board_link" not in names
+
+
+def test_lead_links_a_review_item_to_the_work_it_reviews():
+    from coworker.teams.remote_tools import board_tools_over
+
+    class Dialect:
+        def link(self, space, src, kind, dst):
+            self.call = (space, src, kind, dst)
+            return {"seq": 7, "kind": "item_linked", "item_id": src}
+
+    d = Dialect()
+    link = {t.__name__: t for t in board_tools_over(d, space="proj", role="lead")}["board_link"]
+    link(2, 1)
+    assert d.call == ("proj", 2, "parent", 1)
 
 
 def test_a_base_url_sends_the_bare_model_id_to_an_openai_compatible_endpoint():

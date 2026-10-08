@@ -58,7 +58,13 @@ def board_tools_over(dialect, *, space: str, role: str) -> list:
         result = _safe(dialect.assign, space, int(id), assignee)
         return result if "error" in result else mutation_receipt(result)
 
+    def board_link(id: int, parent_id: int) -> Any:
+        """Link item `id` under item `parent_id` (lead only). Whoever is assigned `id`
+        can then read and comment on `parent_id`, e.g. a reviewer on the work it reviews."""
+        result = _safe(dialect.link, space, int(id), "parent", int(parent_id))
+        return result if "error" in result else mutation_receipt(result)
+
     tools = [board_list, board_get, board_comments, board_comment, board_move, board_create]
     if role == "lead":
-        tools.append(board_assign)
+        tools += [board_assign, board_link]
     return tools
