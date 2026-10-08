@@ -33,6 +33,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--approval-mode", default="bypass-approvals",
                    choices=["auto-approve", "bypass-approvals"],
                    help="the sandbox is what contains the agent; nobody is present to approve")
+    p.add_argument("--spawn-url", default=os.environ.get("OPENWORKER_SPAWN_URL", "http://host.openshell.internal:8766"),
+                   help="OpenShell's creation service (Spawn Gate); used by a lead to staff workers")
     p.add_argument("--workspace", default=os.getcwd())
     p.add_argument("--poll-seconds", type=float, default=3.0)
     p.add_argument("--once", action="store_true", help="handle one batch of work, then exit")
@@ -75,6 +77,7 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
     from ..secrets import SecretStore, state_dir
     from ..teams.dialect import RemoteDialect
     from ..teams.remote_tools import board_tools_over
+    from ..teams.spawn_tools import spawn_tools
     from .runner import normalize_model, scripted_provider
 
     dialect = RemoteDialect(args.board_url, None, client=client)
@@ -98,7 +101,8 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
         model=model,
         mode=Mode(args.approval_mode),
         provider=provider,
-        extra_tools=board_tools_over(dialect, space=args.space, role=role),
+        extra_tools=board_tools_over(dialect, space=args.space, role=role) + (
+            spawn_tools(args.spawn_url, team=args.space) if role == "lead" else []),
         session_id=f"agent-{uuid.uuid4().hex[:8]}",
     )
     engine.attendance = lambda: "auto"
