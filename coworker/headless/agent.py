@@ -43,15 +43,37 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def digest(events: list[dict[str, Any]], who: dict[str, Any]) -> str:
+def digest(events: list[dict[str, Any]], who: dict[str, Any], items: Optional[dict[int, dict]] = None) -> str:
+    """The wake-up message. Each wake is a fresh conversation, so it carries the context
+    from the board: the activity, and each item it touches (description, recent comments)."""
     lines = [f"You are {who.get('actor')} (role {who.get('role')}) on a team board. New activity on the board:"]
     for e in events:
         payload = e.get("payload") or {}
         detail = payload.get("body") or payload.get("comment") or payload.get("assignee") or ""
         lines.append(f"- {e.get('kind')} on item {e.get('item_id')} by {e.get('actor')}: {detail}".rstrip(": "))
+    for item_id, item in sorted((items or {}).items()):
+        lines.append(f"\nItem {item_id}: {item.get('title')} (state {item.get('state')}, assignee {item.get('assignee')})")
+        if item.get("description"):
+            lines.append(f"Description: {item['description']}")
+        if item.get("criteria"):
+            lines.append(f"Criteria: {item['criteria']}")
+        for c in item.get("recent_comments", []):
+            lines.append(f"  comment by {c.get('author')}: {c.get('body')}")
     lines.append("Decide what this activity asks of you and act on it now with your tools. "
                  "If an earlier instruction said to wait for this, the wait is over.")
     return "\n".join(lines)
+
+
+def _item_context(dialect, space: str, events: list[dict[str, Any]]) -> dict[int, dict]:
+    out: dict[int, dict] = {}
+    for item_id in {e.get("item_id") for e in events if e.get("item_id")}:
+        try:
+            item = dict(dialect.get_item(space, int(item_id)))
+            item["recent_comments"] = dialect.comment_page(space, int(item_id), limit=10).get("comments", [])[-10:]
+            out[int(item_id)] = item
+        except Exception:  # context is a help, not a requirement
+            continue
+    return out
 
 
 def make_provider(model: str, base_url: Optional[str] = None):
@@ -96,17 +118,22 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
         provider, model = make_provider(args.model, args.base_url)
     workspace = Path(args.workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
-    engine = build_engine(
-        agent=get_agent(args.coworker),
-        workspace=workspace,
-        model=model,
-        mode=Mode(args.approval_mode),
-        provider=provider,
-        extra_tools=board_tools_over(dialect, space=args.space, role=role) + (
-            spawn_tools(args.spawn_url, team=args.space, board_url=args.board_url) if role == "lead" else []),
-        session_id=f"agent-{uuid.uuid4().hex[:8]}",
-    )
-    engine.attendance = lambda: "auto"
+    tools = board_tools_over(dialect, space=args.space, role=role) + (
+        spawn_tools(args.spawn_url, team=args.space, board_url=args.board_url) if role == "lead" else [])
+
+    def new_engine():
+        # A fresh conversation per wake: the board is the agent's memory, turns stay small.
+        engine = build_engine(
+            agent=get_agent(args.coworker),
+            workspace=workspace,
+            model=model,
+            mode=Mode(args.approval_mode),
+            provider=provider,
+            extra_tools=tools,
+            session_id=f"agent-{uuid.uuid4().hex[:8]}",
+        )
+        engine.attendance = lambda: "auto"
+        return engine
 
     idle_since = time.monotonic()
     while True:
@@ -115,8 +142,11 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
             idle_since = time.monotonic()
             upto = max(int(e.get("seq", 0)) for e in events)
 
+            engine = new_engine()
+            message = digest(events, who, _item_context(dialect, args.space, events))
+
             async def turn() -> None:
-                async for ev in engine.run(digest(events, who)):
+                async for ev in engine.run(message):
                     kind = getattr(ev.type, "value", str(ev.type))
                     data = ev.data if isinstance(ev.data, dict) else {}
                     if kind == "tool_proposed":

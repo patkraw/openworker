@@ -62,3 +62,37 @@ def test_a_base_url_sends_the_bare_model_id_to_an_openai_compatible_endpoint():
                                     "https://inference-api.nvidia.com/v1")
     assert model == "aws/anthropic/bedrock-claude-sonnet-5-5"
     assert provider._base_url == "https://inference-api.nvidia.com/v1"
+
+
+def test_a_second_wake_runs_a_second_turn(api, tmp_path):  # noqa: F811
+    client, manager, key = api
+    item = manager.team_store.create_item("proj", USER, title="First", criteria="x")
+    manager.team_store.assign("proj", USER, item["id"], "reviewer")
+    script = tmp_path / "turns.json"
+    script.write_text(json.dumps([
+        {"tool_calls": [{"name": "board_comment", "arguments": {"id": item["id"], "body": "first turn"}}]},
+        {"text": "Waiting."},
+        {"tool_calls": [{"name": "board_comment", "arguments": {"id": item["id"], "body": "second turn"}}]},
+        {"text": "Done."},
+    ]))
+    from coworker.headless import agent as agent_mod
+
+    calls = {"n": 0}
+    real_sleep = agent_mod.time.sleep
+
+    def sleep_and_poke(seconds):
+        calls["n"] += 1
+        if calls["n"] == 1:   # after the first turn, the user comments: a second wake
+            manager.team_store.comment("proj", USER, item["id"], "approved, go ahead")
+        real_sleep(0)
+
+    agent_mod.time.sleep = sleep_and_poke
+    try:
+        args = agent_mod._parser().parse_args([
+            "--space", "proj", "--board-url", "http://board.test", "--scripted", str(script),
+            "--workspace", str(tmp_path / "ws"), "--poll-seconds", "0", "--idle-exit-seconds", "0.5"])
+        agent_mod.run(args, client=PassportClient(client, key, "sb-rev"))
+    finally:
+        agent_mod.time.sleep = real_sleep
+    bodies = [c["body"] for c in manager.team_store.comment_page("proj", item["id"], actor=USER)["comments"]]
+    assert bodies == ["first turn", "approved, go ahead", "second turn"]
