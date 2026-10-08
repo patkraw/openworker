@@ -46,8 +46,14 @@ class ApprovalStore:
                 id TEXT PRIMARY KEY, proposal TEXT NOT NULL, space TEXT NOT NULL, lead TEXT NOT NULL,
                 worker TEXT NOT NULL, digest TEXT NOT NULL, expires REAL NOT NULL, used REAL);
         """)
+        # The proposing lead's sandbox: a replacement lead with the same name is another lead.
+        for table in ("proposals", "approvals"):
+            cols = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            if "lead_instance" not in cols:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN lead_instance TEXT")
 
-    def propose(self, space: str, lead: str, workers: list[dict[str, Any]]) -> dict[str, Any]:
+    def propose(self, space: str, lead: str, workers: list[dict[str, Any]],
+                lead_instance: Optional[str] = None) -> dict[str, Any]:
         if not workers:
             raise ApprovalError("a team proposal needs at least one worker")
         names = [w.get("name") for w in workers]
@@ -58,8 +64,9 @@ class ApprovalStore:
                 raise ApprovalError(f"worker {w.get('name')} needs a policy")
         pid = "tp_" + secrets.token_hex(8)
         with self._lock:
-            self._db.execute("INSERT INTO proposals VALUES (?, ?, ?, ?, 'pending', ?, NULL)",
-                             (pid, space, lead, json.dumps(workers), time.time()))
+            self._db.execute("INSERT INTO proposals (id, space, lead, workers, state, created, decided_by,"
+                             " lead_instance) VALUES (?, ?, ?, ?, 'pending', ?, NULL, ?)",
+                             (pid, space, lead, json.dumps(workers), time.time(), lead_instance))
         return self.get(pid)
 
     def get(self, pid: str) -> Optional[dict[str, Any]]:
@@ -78,23 +85,37 @@ class ApprovalStore:
             "SELECT id FROM proposals WHERE state='pending' ORDER BY created")]
 
     def decide(self, pid: str, *, approve: bool, by: str) -> dict[str, Any]:
+        """Record the user's decision and, when approved, one approval ID per worker, in one
+        transaction: nobody can see 'approved' without its IDs."""
         with self._lock:
             row = self._db.execute("SELECT * FROM proposals WHERE id=?", (pid,)).fetchone()
             if not row:
                 raise ApprovalError("no such proposal")
             if row["state"] != "pending":
                 raise ApprovalError(f"proposal is already {row['state']}")
-            state = "approved" if approve else "rejected"
-            self._db.execute("UPDATE proposals SET state=?, decided_by=? WHERE id=?", (state, by, pid))
-            if approve:
-                expires = time.time() + APPROVAL_LIFETIME_SECONDS
-                for w in json.loads(row["workers"]):
-                    self._db.execute("INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
-                                     ("ap_" + secrets.token_urlsafe(16), pid, row["space"], row["lead"],
-                                      w["name"], worker_digest(w), expires))
+            # Everything that can fail happens before anything is written.
+            ids = [("ap_" + secrets.token_urlsafe(16), w["name"], worker_digest(w))
+                   for w in json.loads(row["workers"])] if approve else []
+            expires = time.time() + APPROVAL_LIFETIME_SECONDS
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                cur = self._db.execute("UPDATE proposals SET state=?, decided_by=? WHERE id=? AND state='pending'",
+                                       ("approved" if approve else "rejected", by, pid))
+                if cur.rowcount != 1:
+                    raise ApprovalError("proposal was decided concurrently")
+                for aid, worker, digest in ids:
+                    self._db.execute("INSERT INTO approvals (id, proposal, space, lead, worker, digest, expires,"
+                                     " used, lead_instance) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                                     (aid, pid, row["space"], row["lead"], worker, digest, expires,
+                                      row["lead_instance"]))
+                self._db.execute("COMMIT")
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
         return self.get(pid)
 
-    def consume(self, approval_id: str, *, space: str, lead: str, worker: str, digest: str) -> None:
+    def consume(self, approval_id: str, *, space: str, lead: str, worker: str, digest: str,
+                lead_instance: Optional[str] = None) -> None:
         """Single use. Raises ApprovalError unless everything matches what the user approved."""
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
@@ -106,6 +127,8 @@ class ApprovalStore:
                     "approval expired" if row["expires"] < time.time() else
                     "approval is for another team" if row["space"] != space else
                     "approval is for another lead" if row["lead"] != lead else
+                    "approval is for another lead instance" if row["lead_instance"] and
+                    row["lead_instance"] != lead_instance else
                     "approval is for another worker" if row["worker"] != worker else
                     "this worker differs from what the user approved" if row["digest"] != digest else None)
                 if problem:

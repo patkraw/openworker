@@ -173,3 +173,34 @@ def test_malformed_passport_claims_are_an_authentication_failure(api, claims):
     sig = _b64(key.sign(f"{header}.{body}".encode()))
     r = client.get("/v1/board/whoami", headers={"X-OpenShell-Caller": f"{header}.{body}.{sig}"})
     assert r.status_code == 401, r.text
+
+
+def test_sandboxed_agents_cannot_use_the_journal(api):
+    """Review finding 7: journal grants are by bare name across teams, so a later agent
+    with a reused name could read another team's case. Closed for sandboxed agents."""
+    client, _, key = api
+    for method, path in [("get", "/v1/board/journal/cases"), ("get", "/v1/board/journal")]:
+        r = getattr(client, method)(path, headers=passport(key, "sb-rev"), params={"case": "c1"})
+        assert r.status_code == 403, (path, r.text)
+    r = client.post("/v1/board/journal", headers=passport(key, "sb-rev"), json={"case": "c1", "body": "x"})
+    assert r.status_code == 403, r.text
+
+
+def test_proposals_record_the_proposing_lead_instance(api):
+    client, manager, key = api
+    from coworker.teams.approvals import ApprovalStore  # noqa: F401
+    r = client.post("/v1/board/team-proposals", headers=passport(key, "sb-lead"), json={
+        "space": "proj", "workers": [{"name": "w", "persona": "reviewer", "policy": {"version": 1}}]})
+    assert r.status_code == 200, r.text
+    pid = r.json()["id"]
+    client.post(f"/v1/team-proposals/{pid}/decide", headers={"X-OpenWorker-Token": "sidecar-secret"},
+                json={"approve": True})
+    aid = client.get(f"/v1/board/team-proposals/{pid}", headers=passport(key, "sb-lead"),
+                     params={"space": "proj"}).json()["approvals"]["w"]
+    from coworker.teams.approvals import worker_digest
+    body = {"approval_id": aid, "team": "proj", "lead": "lead", "worker": "w",
+            "digest": worker_digest({"name": "w", "persona": "reviewer", "role": "worker",
+                                     "policy": {"version": 1}, "providers": []}),
+            "lead_instance": "sb-other"}
+    r = client.post("/v1/admin/approvals/consume", headers=ADMIN, json=body)
+    assert r.status_code != 200 and "another lead" in r.text

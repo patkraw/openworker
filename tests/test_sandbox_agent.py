@@ -53,7 +53,7 @@ def test_worker_is_not_offered_assign(api):  # noqa: F811
 
     names = {t.__name__ for t in board_tools_over(object(), space="proj", role="worker")}
     assert "board_assign" not in names and "board_comment" in names
-    assert "board_link" not in names
+    assert "board_link" not in names and "board_create" not in names
 
 
 def test_lead_links_a_review_item_to_the_work_it_reviews():

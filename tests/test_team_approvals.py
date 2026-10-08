@@ -76,7 +76,8 @@ def test_lead_proposes_user_approves_spawn_gate_consumes(api):  # noqa: F811
     assert client.post(f"/v1/team-proposals/{p['id']}/decide", headers=sidecar, json={"approve": True}).status_code == 200
     mine = client.get(f"/v1/board/team-proposals/{p['id']}", headers=passport(key, "sb-lead"), params={"space": "proj"}).json()
     aid = mine["approvals"]["reviewer"]
-    consume = {"approval_id": aid, "team": "proj", "lead": "lead", "worker": "reviewer", "digest": worker_digest(REVIEWER)}
+    consume = {"approval_id": aid, "team": "proj", "lead": "lead", "worker": "reviewer", "digest": worker_digest(REVIEWER),
+               "lead_instance": "sb-lead"}
     assert client.post("/v1/admin/approvals/consume", headers=ADMIN, json=consume).status_code == 200
     assert client.post("/v1/admin/approvals/consume", headers=ADMIN, json=consume).status_code == 403
 
@@ -93,3 +94,25 @@ def test_the_user_decides_only_with_the_app_token(api):  # noqa: F811
     assert client.post(f"/v1/team-proposals/{p['id']}/decide", json={"approve": True}).status_code == 401
     r = client.post(f"/v1/team-proposals/{p['id']}/decide", headers=passport(key, "sb-lead"), json={"approve": True})
     assert r.status_code == 401
+
+
+# --- review findings -----------------------------------------------------------------------
+
+def test_a_failed_decision_leaves_the_proposal_pending(store):
+    """Review finding 15: 'approved' was committed before the approval IDs."""
+    bad = {**REVIEWER, "providers": ["p", 7]}   # cannot be digested
+    p = store.propose("proj", "lead", [bad])
+    with pytest.raises(Exception):
+        store.decide(p["id"], approve=True, by="user")
+    assert store.get(p["id"])["state"] == "pending"
+
+
+def test_an_approval_belongs_to_the_lead_instance_that_proposed(store):
+    """Review finding 11: a replacement lead with the same name inherited approvals."""
+    p = store.propose("proj", "lead", [REVIEWER], lead_instance="sb-lead-1")
+    aid = store.decide(p["id"], approve=True, by="user")["approvals"]["reviewer"]
+    with pytest.raises(ApprovalError, match="another lead"):
+        store.consume(aid, space="proj", lead="lead", worker="reviewer", digest=worker_digest(REVIEWER),
+                      lead_instance="sb-lead-2")
+    store.consume(aid, space="proj", lead="lead", worker="reviewer", digest=worker_digest(REVIEWER),
+                  lead_instance="sb-lead-1")

@@ -64,7 +64,8 @@ def board_tools_over(dialect, *, space: str, role: str) -> list:
         result = _safe(dialect.link, space, int(id), "parent", int(parent_id))
         return result if "error" in result else mutation_receipt(result)
 
-    tools = [board_list, board_get, board_comments, board_comment, board_move, board_create]
+    tools = [board_list, board_get, board_comments, board_comment, board_move]
     if role == "lead":
-        tools += [board_assign, board_link]
+        # Workers are not offered what their role cannot do (Channel Guard refuses it anyway).
+        tools += [board_create, board_assign, board_link]
     return tools

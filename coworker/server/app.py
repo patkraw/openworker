@@ -975,7 +975,13 @@ def create_app(manager: SessionManager) -> FastAPI:
             if _request_spaces(request) - {agent.space}:
                 return JSONResponse({"error": "this agent may only use its own team's space"},
                                     status_code=403)
+            if request.url.path.startswith("/v1/board/journal"):
+                # Journal grants are by bare agent name across teams; until they are
+                # team-qualified, sandboxed agents do not get the journal.
+                return JSONResponse({"error": "the journal is not available to sandboxed agents"},
+                                    status_code=403)
             request.state.board_space = agent.space
+            request.state.sandbox_id = agent.sandbox_id
             actor = agent.actor()
         else:
             actor = _board_actor(request)
@@ -1018,7 +1024,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             if actor.role.value != "lead":
                 raise TeamsAuthorityError("only a lead proposes a team")
             try:
-                return team_approvals.propose(str(body.get("space", "")), actor.id, list(body.get("workers") or []))
+                return team_approvals.propose(str(body.get("space", "")), actor.id, list(body.get("workers") or []),
+                                              lead_instance=getattr(request.state, "sandbox_id", None))
             except ApprovalError as error:
                 raise TeamsBoardError(str(error)) from error
 
@@ -1055,7 +1062,8 @@ def create_app(manager: SessionManager) -> FastAPI:
         try:
             team_approvals.consume(str(body.get("approval_id", "")), space=str(body.get("team", "")),
                                    lead=str(body.get("lead", "")), worker=str(body.get("worker", "")),
-                                   digest=str(body.get("digest", "")))
+                                   digest=str(body.get("digest", "")),
+                                   lead_instance=body.get("lead_instance"))
         except ApprovalError as error:
             return JSONResponse({"error": str(error)}, status_code=403)
         return {"ok": True}
