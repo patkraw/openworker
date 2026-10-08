@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import time
@@ -173,7 +174,10 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
                     kind = getattr(ev.type, "value", str(ev.type))
                     data = ev.data if isinstance(ev.data, dict) else {}
                     if kind == "tool_proposed":
-                        print(f"openworker agent: call {data.get('name') or data.get('tool')}", flush=True)
+                        args = json.dumps(data.get("arguments") or {}, ensure_ascii=False)
+                        if len(args) > 400:
+                            args = args[:400] + "…"
+                        print(f"openworker agent: call {data.get('name') or data.get('tool')} {args}", flush=True)
                     elif kind == "tool_finished":
                         result = str(data.get("result") or data.get("output") or data)[:300]
                         print(f"openworker agent: result {result}", flush=True)
