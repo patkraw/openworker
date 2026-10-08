@@ -141,8 +141,11 @@ class PassportAuth:
 
     def caller(self, token: str) -> SandboxAgent:
         """Raises PassportError (invalid -> 401) or LookupError (not registered -> 403)."""
+        return self.caller_with_claims(token)[0]
+
+    def caller_with_claims(self, token: str) -> tuple[SandboxAgent, dict]:
         claims = self.verifier.verify(token)
         agent = self.agents.get(claims["sbx"])
         if agent is None:
             raise LookupError("sandbox is not registered with this board")
-        return agent
+        return agent, claims

@@ -962,12 +962,26 @@ def create_app(manager: SessionManager) -> FastAPI:
         return spaces
 
     def _board(request: Request, handler):
+        """Board calls; sandboxed (Passport) callers are logged one line per call."""
+        result = _board_call(request, handler)
+        agent = getattr(request.state, "passport_agent", None)
+        if agent is not None and request.url.path != "/v1/board/pending":
+            status = getattr(result, "status_code", 200)
+            print(f"board: {request.method} {request.url.path} -> {status} | caller {agent}", flush=True)
+        return result
+
+    def _board_call(request: Request, handler):
         request.state.board_space = None
         passport_token = request.headers.get(PASSPORT_HEADER, "")
         if passport_auth is not None and passport_token:
             # A Passport is authoritative: never fall back to a bearer token.
+            request.state.passport_agent = f"(Passport {passport_token[:12]}… did not verify)"
             try:
-                agent = passport_auth.caller(passport_token)
+                agent, claims = passport_auth.caller_with_claims(passport_token)
+                request.state.passport_agent = (
+                    f"{agent.name}@{agent.space} role={agent.role} | identity from Passport "
+                    f"{passport_token[:12]}…{passport_token[-6:]}: signature ok, aud={claims.get('aud')}, "
+                    f"sandbox {str(claims.get('sbx'))[:8]}… registered as {agent.name}")
             except PassportError as error:
                 return JSONResponse({"error": f"invalid Sandbox Passport: {error}"}, status_code=401)
             except LookupError as error:

@@ -164,6 +164,11 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
             upto = max([through, *(int(e.get("seq", 0)) for e in events)])
 
             engine = new_engine()
+            kinds = sorted({str(e.get("kind")) for e in events})
+            items = sorted({int(e["item_id"]) for e in events if e.get("item_id")})
+            print(f"openworker agent: wake {len(events)} event(s) {kinds} on items {items}, seq ≤ {upto}"
+                  f"{f' (retry {attempts})' if attempts else ''}", flush=True)
+            turn_started, calls = time.monotonic(), []
             message = digest(events, who, _item_context(dialect, args.space, events))
             if attempts:
                 message += "\n" + RETRY_NOTE
@@ -174,6 +179,7 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
                     kind = getattr(ev.type, "value", str(ev.type))
                     data = ev.data if isinstance(ev.data, dict) else {}
                     if kind == "tool_proposed":
+                        calls.append(data.get("name"))
                         args = json.dumps(data.get("arguments") or {}, ensure_ascii=False)
                         if len(args) > 400:
                             args = args[:400] + "…"
@@ -201,6 +207,8 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
             attempts = 0
             dialect.consume(args.space, upto)
             consumed = upto
+            print(f"openworker agent: turn done in {time.monotonic() - turn_started:.1f}s, {len(calls)} tool call(s); "
+                  f"consumed through seq {upto}", flush=True)
             if args.once:
                 return 0
         else:
