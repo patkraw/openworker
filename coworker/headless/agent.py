@@ -117,8 +117,14 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
             async def turn() -> None:
                 async for ev in engine.run(digest(events, who)):
                     kind = getattr(ev.type, "value", str(ev.type))
-                    if kind in ("tool_proposed", "error", "message_end"):
-                        print(f"openworker agent: {kind}", flush=True)
+                    data = ev.data if isinstance(ev.data, dict) else {}
+                    if kind == "tool_proposed":
+                        print(f"openworker agent: call {data.get('name') or data.get('tool')}", flush=True)
+                    elif kind == "tool_finished":
+                        result = str(data.get("result") or data.get("output") or data)[:300]
+                        print(f"openworker agent: result {result}", flush=True)
+                    elif kind in ("error", "assistant_message"):
+                        print(f"openworker agent: {kind} {str(data.get('error') or data.get('text') or '')[:300]}", flush=True)
 
             asyncio.run(turn())
             dialect.consume(args.space, upto)
