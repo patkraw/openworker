@@ -53,3 +53,12 @@ def test_worker_is_not_offered_assign(api):  # noqa: F811
 
     names = {t.__name__ for t in board_tools_over(object(), space="proj", role="worker")}
     assert "board_assign" not in names and "board_comment" in names
+
+
+def test_a_base_url_sends_the_bare_model_id_to_an_openai_compatible_endpoint():
+    from coworker.headless.agent import make_provider
+
+    provider, model = make_provider("openai:aws/anthropic/bedrock-claude-sonnet-5-5",
+                                    "https://inference-api.nvidia.com/v1")
+    assert model == "aws/anthropic/bedrock-claude-sonnet-5-5"
+    assert provider._base_url == "https://inference-api.nvidia.com/v1"

@@ -27,6 +27,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--space", required=True, help="the team's board space")
     p.add_argument("--coworker", default="swe-worker", help="persona id")
     p.add_argument("--model", default=os.environ.get("OPENWORKER_MODEL"), help="e.g. anthropic:claude-sonnet-5-5")
+    p.add_argument("--base-url", default=os.environ.get("OPENWORKER_BASE_URL"),
+                   help="an OpenAI-compatible endpoint, e.g. https://inference-api.nvidia.com/v1;"
+                        " the key comes from OPENAI_API_KEY (an OpenShell placeholder in a sandbox)")
     p.add_argument("--approval-mode", default="bypass-approvals",
                    choices=["auto-approve", "bypass-approvals"],
                    help="the sandbox is what contains the agent; nobody is present to approve")
@@ -46,6 +49,22 @@ def digest(events: list[dict[str, Any]], who: dict[str, Any]) -> str:
         lines.append(f"- {e.get('kind')} on item {e.get('item_id')} by {e.get('actor')}: {detail}".rstrip(": "))
     lines.append("Use the board tools to act on it, then stop.")
     return "\n".join(lines)
+
+
+def make_provider(model: str, base_url: Optional[str] = None):
+    """The model client. With a base URL, an OpenAI-compatible endpoint takes the bare
+    model id (e.g. aws/anthropic/bedrock-claude-sonnet-5-5); otherwise OpenWorker's router."""
+    from ..providers import ProviderRouter
+    from ..providers.openai_provider import OpenAIProvider
+    from ..secrets import SecretStore, state_dir
+    from .runner import normalize_model
+
+    if base_url:
+        bare = model.split(":", 1)[1] if model.startswith("openai:") else model
+        return OpenAIProvider(base_url=base_url), bare
+    model = normalize_model(model)
+    return (ProviderRouter(SecretStore(state_dir() / "secrets.json"),
+                           default_provider=model.split(":", 1)[0] if ":" in model else "openai"), model)
 
 
 def run(args: argparse.Namespace, *, client: Any = None) -> int:
@@ -70,9 +89,7 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
         if not args.model:
             print("openworker agent: --model is required", file=sys.stderr)
             return 2
-        model = normalize_model(args.model)
-        provider = ProviderRouter(SecretStore(state_dir() / "secrets.json"),
-                                  default_provider=model.split(":", 1)[0] if ":" in model else "openai")
+        provider, model = make_provider(args.model, args.base_url)
     workspace = Path(args.workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     engine = build_engine(
