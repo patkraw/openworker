@@ -72,11 +72,11 @@ def spawn_tools(spawn_url: str, *, team: str, client: Optional[Any] = None,
             return {"staffed": name, **{k: v for k, v in r.json().items() if k in ("state", "sandbox_id")}}
         return {"error": "Spawn Gate refused", "status": r.status_code, "detail": r.json().get("detail", r.text)}
 
-    def propose_team(workers: list[dict]) -> Any:
+    def propose_sandbox_team(workers: list[dict]) -> Any:
         """Propose your team for the user to approve. Each worker is a dict with `name`,
         `persona`, `task`, and optionally `network` (entry names from team_boundary) and
         `writable` (paths). Nothing is created until the user approves; then call
-        staff_approved_team with the returned proposal id."""
+        staff_approved_team with the returned proposal id. (Named apart from OpenWorker's in-app propose_team.)"""
         if board is None:
             return {"error": "no board address configured"}
         boundary = team_boundary()
@@ -119,4 +119,4 @@ def spawn_tools(spawn_url: str, *, team: str, client: Optional[Any] = None,
                                   else {"refused": rr.json().get("detail", rr.text)})
         return {"staffed": results, "next": "create board items and assign them to the workers"}
 
-    return [team_boundary, staff_worker, propose_team, staff_approved_team]
+    return [team_boundary, staff_worker, propose_sandbox_team, staff_approved_team]
