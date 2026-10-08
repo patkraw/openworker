@@ -57,3 +57,25 @@ def test_staff_worker_reports_a_bad_request_instead_of_sending_it():
     staff = {t.__name__: t for t in spawn_tools("http://gate", team="proj", client=gate)}["staff_worker"]
     assert "error" in staff("x", "reviewer", "t", network=["evil"])
     assert gate.posted == []
+
+
+def test_proposals_name_the_teams_default_providers_so_the_user_approves_them():
+    """Review finding 10: providers added after approval were never shown to the user."""
+    class Gate(FakeGate):
+        def get(self, path):
+            body = {**BOUNDARY, "default_providers": ["openworker-nvidia"]}
+            return type("R", (), {"status_code": 200, "json": lambda self: body})()
+
+    class Board:
+        def post(self, path, json):
+            self.sent = json
+            return type("R", (), {"status_code": 200, "json": lambda self: {"id": "tp_1", "state": "pending"}})()
+
+    board = Board()
+    propose = {t.__name__: t for t in spawn_tools("http://gate", team="proj", client=Gate(),
+                                                   board_client=board)}["propose_sandbox_team"]
+    propose([{"name": "reviewer", "persona": "reviewer", "network": ["inference"]},
+             {"name": "patcher", "persona": "swe-worker", "providers": ["github"]}])
+    by_name = {w["name"]: w for w in board.sent["workers"]}
+    assert by_name["reviewer"]["providers"] == ["openworker-nvidia"]
+    assert by_name["patcher"]["providers"] == ["github"]

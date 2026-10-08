@@ -89,8 +89,10 @@ def spawn_tools(spawn_url: str, *, team: str, client: Optional[Any] = None,
                                       writable=list(w.get("writable") or []))
             except ValueError as error:
                 return {"error": f"{w.get('name')}: {error}"}
+            # Name every provider the worker will get, so the approval covers them.
+            providers = list(w.get("providers") or boundary.get("default_providers") or [])
             proposed.append({"name": w["name"], "persona": w.get("persona", ""), "role": "worker",
-                             "task": w.get("task", ""), "policy": policy, "providers": list(w.get("providers") or [])})
+                             "task": w.get("task", ""), "policy": policy, "providers": providers})
         r = board.post("/v1/board/team-proposals", json={"space": team, "workers": proposed})
         data = r.json()
         if r.status_code != 200:

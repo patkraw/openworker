@@ -945,18 +945,21 @@ def create_app(manager: SessionManager) -> FastAPI:
         token = auth[7:] if auth.lower().startswith("bearer ") else ""
         return manager.board_tokens.resolve(token)
 
-    def _request_space(request: Request) -> Optional[str]:
-        """The board space a request targets: `space` in the query or the JSON body."""
-        space = request.query_params.get("space")
-        if space is None:
-            raw = getattr(request, "_body", b"") or b""
-            try:
-                parsed = json.loads(raw) if raw else {}
-            except ValueError:
-                parsed = {}
-            if isinstance(parsed, dict) and parsed.get("space") is not None:
-                space = str(parsed.get("space"))
-        return space
+    def _request_spaces(request: Request) -> set[str]:
+        """Every board space a request names: `space` in the query and in the JSON body.
+        A sandboxed caller must name only its own team's space in both places, because
+        handlers read whichever one their route uses."""
+        spaces = set()
+        if request.query_params.get("space") is not None:
+            spaces.add(request.query_params.get("space"))
+        raw = getattr(request, "_body", b"") or b""
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except ValueError:
+            parsed = {}
+        if isinstance(parsed, dict) and parsed.get("space") is not None:
+            spaces.add(str(parsed.get("space")))
+        return spaces
 
     def _board(request: Request, handler):
         request.state.board_space = None
@@ -969,8 +972,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 return JSONResponse({"error": f"invalid Sandbox Passport: {error}"}, status_code=401)
             except LookupError as error:
                 return JSONResponse({"error": str(error)}, status_code=403)
-            space = _request_space(request)
-            if space is not None and space != agent.space:
+            if _request_spaces(request) - {agent.space}:
                 return JSONResponse({"error": "this agent may only use its own team's space"},
                                     status_code=403)
             request.state.board_space = agent.space

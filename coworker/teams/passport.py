@@ -67,6 +67,8 @@ class PassportVerifier:
             claims = json.loads(_unb64(claims_b64))
         except (ValueError, json.JSONDecodeError) as error:
             raise PassportError("malformed Passport") from error
+        if not isinstance(header, dict) or not isinstance(claims, dict):
+            raise PassportError("malformed Passport")
         if header.get("alg") != "EdDSA":
             raise PassportError("unexpected algorithm")
         try:
@@ -80,7 +82,7 @@ class PassportVerifier:
             raise PassportError("Passport is for another service")
         if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] < now - LEEWAY_SECONDS:
             raise PassportError("expired")
-        if not claims.get("sbx"):
+        if not isinstance(claims.get("sbx"), str) or not claims["sbx"]:
             raise PassportError("no sandbox id")
         return claims
 

@@ -146,3 +146,30 @@ def test_bearer_tokens_still_work_for_clients_outside_openshell(api):
     token = manager.board_tokens.mint("ext", "worker")
     r = client.get("/v1/board/whoami", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200 and r.json()["actor"] == "ext"
+
+
+def test_a_query_space_cannot_cover_for_another_body_space(api):
+    """Review finding: authorization read the query, the handler used the body."""
+    client, manager, key = api
+    r = client.post("/v1/board/items", headers=passport(key, "sb-lead"), params={"space": "proj"},
+                    json={"space": "other", "title": "Injected", "criteria": "x"})
+    assert r.status_code == 403, r.text
+    assert manager.team_store.list_items("other", LEAD) == []
+
+
+def test_a_body_space_must_match_the_callers_team(api):
+    client, _, key = api
+    r = client.post("/v1/board/items", headers=passport(key, "sb-lead"),
+                    json={"space": "other", "title": "Injected", "criteria": "x"})
+    assert r.status_code == 403, r.text
+
+
+@pytest.mark.parametrize("claims", [b"[]", b"\"x\"", b"7"])
+def test_malformed_passport_claims_are_an_authentication_failure(api, claims):
+    """Review finding: non-object claims raised an internal error."""
+    client, _, key = api
+    header = _b64(json.dumps({"alg": "EdDSA", "typ": "JWT"}).encode())
+    body = _b64(claims)
+    sig = _b64(key.sign(f"{header}.{body}".encode()))
+    r = client.get("/v1/board/whoami", headers={"X-OpenShell-Caller": f"{header}.{body}.{sig}"})
+    assert r.status_code == 401, r.text
