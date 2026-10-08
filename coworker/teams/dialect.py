@@ -507,9 +507,14 @@ class RemoteDialect:
         return self._post("/v1/board/policy", {"space": space, "claims": claims})
 
     def pending(self, space: str, *, limit: int = 200) -> list[dict[str, Any]]:
-        return self._get("/v1/board/pending", {"space": space, "limit": limit})[
-            "events"
-        ]
+        return self.pending_page(space, limit=limit)["events"]
+
+    def pending_page(self, space: str, *, limit: int = 200) -> dict[str, Any]:
+        """Events for this actor and `through_seq`, the last event the board scanned."""
+        page = self._get("/v1/board/pending", {"space": space, "limit": limit})
+        events = page.get("events", [])
+        through = page.get("through_seq") or max((int(e.get("seq", 0)) for e in events), default=0)
+        return {"events": events, "through_seq": int(through)}
 
     def consume(self, space: str, upto_seq: int) -> None:
         self._post("/v1/board/consume", {"space": space, "upto_seq": int(upto_seq)})

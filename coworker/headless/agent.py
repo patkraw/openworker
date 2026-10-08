@@ -64,16 +64,34 @@ def digest(events: list[dict[str, Any]], who: dict[str, Any], items: Optional[di
     return "\n".join(lines)
 
 
+def _latest_comments(dialect, space: str, item_id: int, keep: int = 10) -> list[dict]:
+    """The last `keep` comments: pages are oldest-first, so read to the end."""
+    tail: list[dict] = []
+    after = 0
+    for _ in range(100):   # at most 5000 comments
+        page = dialect.comment_page(space, item_id, after_seq=after, limit=50)
+        tail = (tail + page.get("comments", []))[-keep:]
+        if not page.get("has_more"):
+            break
+        after = int(page.get("next_after_seq", after))
+    return tail
+
+
 def _item_context(dialect, space: str, events: list[dict[str, Any]]) -> dict[int, dict]:
     out: dict[int, dict] = {}
     for item_id in {e.get("item_id") for e in events if e.get("item_id")}:
         try:
             item = dict(dialect.get_item(space, int(item_id)))
-            item["recent_comments"] = dialect.comment_page(space, int(item_id), limit=10).get("comments", [])[-10:]
+            item["recent_comments"] = _latest_comments(dialect, space, int(item_id))
             out[int(item_id)] = item
         except Exception:  # context is a help, not a requirement
             continue
     return out
+
+
+RETRY_NOTE = ("A previous attempt to handle this activity failed partway. Check the board "
+              "for anything you already did before repeating an action.")
+MAX_ATTEMPTS = 5
 
 
 def make_provider(model: str, base_url: Optional[str] = None):
@@ -136,14 +154,19 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
         return engine
 
     idle_since = time.monotonic()
+    attempts, consumed = 0, 0
     while True:
-        events = dialect.pending(args.space)
+        page = dialect.pending_page(args.space)
+        events, through = page["events"], page["through_seq"]
         if events:
             idle_since = time.monotonic()
-            upto = max(int(e.get("seq", 0)) for e in events)
+            upto = max([through, *(int(e.get("seq", 0)) for e in events)])
 
             engine = new_engine()
             message = digest(events, who, _item_context(dialect, args.space, events))
+            if attempts:
+                message += "\n" + RETRY_NOTE
+            failed: list[str] = []
 
             async def turn() -> None:
                 async for ev in engine.run(message):
@@ -156,13 +179,33 @@ def run(args: argparse.Namespace, *, client: Any = None) -> int:
                         print(f"openworker agent: result {result}", flush=True)
                     elif kind in ("error", "assistant_message"):
                         print(f"openworker agent: {kind} {str(data.get('error') or data.get('text') or '')[:300]}", flush=True)
+                    if kind == "error":
+                        failed.append(str(data.get("error") or data))
 
-            asyncio.run(turn())
+            try:
+                asyncio.run(turn())
+            except Exception as error:  # a crashed turn is a failed turn
+                failed.append(repr(error))
+            if failed:
+                # Keep the work: it is consumed only after a turn that finished cleanly.
+                attempts += 1
+                print(f"openworker agent: turn failed (attempt {attempts}): {failed[0][:200]}", flush=True)
+                if args.once or attempts >= MAX_ATTEMPTS:
+                    return 1
+                time.sleep(min(60, 2 ** attempts))
+                continue
+            attempts = 0
             dialect.consume(args.space, upto)
+            consumed = upto
             if args.once:
                 return 0
-        elif args.idle_exit_seconds and time.monotonic() - idle_since > args.idle_exit_seconds:
-            return 0
+        else:
+            if through > consumed:
+                # Nothing here for this agent: move past the quiet stretch.
+                dialect.consume(args.space, through)
+                consumed = through
+            if args.idle_exit_seconds and time.monotonic() - idle_since > args.idle_exit_seconds:
+                return 0
         time.sleep(args.poll_seconds)
 
 

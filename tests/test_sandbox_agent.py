@@ -111,3 +111,58 @@ def test_a_second_wake_runs_a_second_turn(api, tmp_path):  # noqa: F811
         agent_mod.time.sleep = real_sleep
     bodies = [c["body"] for c in manager.team_store.comment_page("proj", item["id"], actor=USER)["comments"]]
     assert bodies == ["first turn", "approved, go ahead", "second turn"]
+
+
+# --- review findings ------------------------------------------------------------------------
+
+def _args(tmp_path, script, *extra):
+    from coworker.headless.agent import _parser
+    return _parser().parse_args(["--space", "proj", "--board-url", "http://board.test",
+                                 "--scripted", str(script), "--workspace", str(tmp_path / "ws"),
+                                 "--poll-seconds", "0", *extra])
+
+
+def test_a_failed_turn_keeps_the_work_and_reports_failure(api, tmp_path):  # noqa: F811
+    """Review finding 8: an error event still consumed the batch and exited 0."""
+    client, manager, key = api
+    item = manager.team_store.create_item("proj", USER, title="Fix", criteria="x")
+    manager.team_store.assign("proj", USER, item["id"], "reviewer")
+    script = tmp_path / "turns.json"
+    script.write_text(json.dumps([{"error": "provider unavailable"}]))   # the model call fails
+    from coworker.headless.agent import run
+    assert run(_args(tmp_path, script, "--once"), client=PassportClient(client, key, "sb-rev")) != 0
+    assert manager.team_store.feed_for("proj", "reviewer") != []   # still pending
+
+
+def test_a_page_of_unrelated_events_does_not_hide_later_work(api, tmp_path):  # noqa: F811
+    """Review finding 16: the feed limited raw events before filtering, so a quiet first
+    page returned nothing and the cursor never moved."""
+    client, manager, key = api
+    for i in range(205):
+        manager.team_store.create_item("proj", USER, title=f"noise {i}", criteria="x")
+    item = manager.team_store.create_item("proj", USER, title="Real work", criteria="x")
+    manager.team_store.assign("proj", USER, item["id"], "reviewer")
+    script = tmp_path / "turns.json"
+    script.write_text(json.dumps([
+        {"tool_calls": [{"name": "board_comment", "arguments": {"id": item["id"], "body": "on it"}}]},
+        {"text": "Done."},
+    ]))
+    from coworker.headless.agent import run
+    run(_args(tmp_path, script, "--idle-exit-seconds", "1"), client=PassportClient(client, key, "sb-rev"))
+    bodies = [c["body"] for c in manager.team_store.comment_page("proj", item["id"], actor=USER)["comments"]]
+    assert bodies == ["on it"]
+
+
+def test_the_wake_up_context_has_the_latest_comments(api):  # noqa: F811
+    """Review finding 17: 'recent comments' were the first page, i.e. the oldest."""
+    client, manager, key = api
+    item = manager.team_store.create_item("proj", USER, title="Long thread", criteria="x")
+    manager.team_store.assign("proj", USER, item["id"], "reviewer")
+    for i in range(60):
+        manager.team_store.comment("proj", USER, item["id"], f"comment {i}")
+    from coworker.headless.agent import _item_context
+    from coworker.teams.dialect import RemoteDialect
+    dialect = RemoteDialect("http://board.test", None, client=PassportClient(client, key, "sb-rev"))
+    ctx = _item_context(dialect, "proj", [{"item_id": item["id"]}])
+    bodies = [c["body"] for c in ctx[item["id"]]["recent_comments"]]
+    assert bodies[-1] == "comment 59" and len(bodies) == 10

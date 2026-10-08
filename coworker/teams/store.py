@@ -351,8 +351,16 @@ class TeamStore:
         its current slice, plus assignment events that START its interest (newly
         assigned to it) or END it (just reassigned away — it hears that, then
         goes quiet). Its own events never appear."""
+        return self.feed_page(space, actor_id, limit=limit)["events"]
+
+    def feed_page(self, space: str, actor_id: str, *, limit: int = 200) -> dict[str, Any]:
+        """`feed_for` plus `through_seq`, the last event scanned: a page with no events
+        for this actor can still be consumed through it, so a quiet stretch of the log
+        never hides the work after it."""
         key = f"feed:{actor_id}:{space}"
-        events = self.events(space, since_seq=self._cursor(key), limit=limit, exclude_kinds=[ITEM_STATUS])
+        cursor = self._cursor(key)
+        events = self.events(space, since_seq=cursor, limit=limit, exclude_kinds=[ITEM_STATUS])
+        through = events[-1]["seq"] if events else cursor
         with self._lock:
             slice_ids = self._worker_slice(space, actor_id)
         out = []
@@ -368,7 +376,7 @@ class TeamStore:
                 continue
             if event.get("item_id") in slice_ids:
                 out.append(event)
-        return out
+        return {"events": out, "through_seq": through}
 
     def consume_feed(self, space: str, actor_id: str, upto_seq: int) -> None:
         self._set_cursor(f"feed:{actor_id}:{space}", int(upto_seq))

@@ -1285,11 +1285,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         # follows the assignment relation, same projection in-app workers use.
         return _board(
             request,
-            lambda actor: {
-                "events": manager.team_store.feed_for(
-                    space, actor.id, limit=int(limit)
-                )
-            },
+            lambda actor: manager.team_store.feed_page(space, actor.id, limit=int(limit)),
         )
 
     @app.post("/v1/board/consume")
